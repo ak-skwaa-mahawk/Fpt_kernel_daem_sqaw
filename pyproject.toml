@@ -19,4 +19,4 @@ fpt-daemon = "fpt_daemon:run"
 fpt-client = "fpt_client:submit_cli"
 
 [tool.setuptools]
-py-modules = ["fpt_daemon", "fpt_client"]
+py-modules = ["fpt_daemon", "fpt_client", "living_zero_core"]
