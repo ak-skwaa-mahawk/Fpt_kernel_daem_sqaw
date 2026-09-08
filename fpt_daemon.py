@@ -3,7 +3,7 @@
 Fpt_kernel_daem_sqaw
 Homeostatic Feedback Processor Theory (FPT) daemon listening over a Unix socket.
 Controls execution limits dynamically via Admission Gate using a multi-surface PID controller
-with atomic state persistence and differentiated telemetry classification.
+with atomic state persistence, differentiated telemetry classification, and Living Zero CA3 handshake approval.
 """
 
 import asyncio
@@ -17,6 +17,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from typing import Deque, Dict, List, Optional, Tuple
+import numpy as np
 
 from admission_gate import (
     ActionProposal,
@@ -26,6 +27,7 @@ from admission_gate import (
     RateLimitConfig,
     gated_shell,
 )
+from living_zero_core import CA3Dynamics, OwnershipEncoder, OwnershipMemory, OwnershipProjector, normalize
 
 SOCKET_PATH = os.path.join(tempfile.gettempdir(), "fpt_kernel.sock")
 STATE_PATH = os.path.join(os.path.expanduser("~"), ".fpt_daemon_state.json")
@@ -39,16 +41,8 @@ WEIGHT_CLEAN_SUCCESS   = 0.0     # Nominal execution
 @dataclass
 class TelemetryEvent:
     timestamp: float
-    category: str  # "policy_block", "timeout", "proc_error", "nominal"
+    category: str
     penalty: float
-
-@dataclass
-class FPTStateSnapshot:
-    cycle_count: int
-    history: List[Dict]
-    integral_error: float
-    last_error: float
-    damping: float
 
 class FPTAdmissionController:
     def __init__(
@@ -85,7 +79,21 @@ class FPTAdmissionController:
         self.base_timeout = base_config.process.timeout_seconds
         self.nominal_write_roots = list(base_config.write_roots)
 
-        # Restore persistent state if available
+        # Initialize Living Zero Handshake Engine (CA3 attractor)
+        self.N = 128
+        self.d = 32
+        self.oproj = OwnershipProjector(N=self.N, d=self.d, seed=42)
+        self.memory = OwnershipMemory(N=self.N, ownership_projector=self.oproj, eta=0.8, gamma=2.0)
+        self.ca3 = CA3Dynamics(N=self.N, memory=self.memory, tau=0.05, dt=0.01)
+        self.encoder = OwnershipEncoder(d=self.d)
+
+        # Baseline Handshake Authority Anchor
+        self.human_authority_tag = "authority:human_in_the_loop"
+        rng = np.random.default_rng(1337)
+        self.authority_pattern = normalize(rng.normal(size=(self.N,)))
+        self.memory.encode(self.authority_pattern, raw_tag=self.human_authority_tag)
+        self.ca3.encode_pattern(pid=0, p_vec=self.authority_pattern, strength=1.5)
+
         self.load_state()
 
     def load_state(self):
@@ -104,11 +112,10 @@ class FPTAdmissionController:
                     category=item["category"],
                     penalty=item["penalty"],
                 ))
-            # Actuate running config immediately from loaded damping
             self.actuate(self.current_damping)
-            print(f"[FPT Daemon] Restored persistent state: cycle={self.cycle_count}, damping={self.current_damping:.3f}")
+            print(f"[FPT Daemon] Restored state: cycle={self.cycle_count}, damping={self.current_damping:.3f}")
         except Exception as e:
-            print(f"[FPT Daemon] Warning: Failed to restore state from {self.state_file}: {e}")
+            print(f"[FPT Daemon] Warning: State restore failed: {e}")
 
     def save_state(self):
         try:
@@ -127,11 +134,22 @@ class FPTAdmissionController:
         except Exception as e:
             print(f"[FPT Daemon] Error saving state: {e}")
 
+    def verify_handshake(self, token_str: Optional[str]) -> bool:
+        """
+        Validates an out-of-band authorization token against the CA3 dynamical attractor.
+        """
+        if not token_str:
+            return False
+        try:
+            # Token format: hex-encoded vector or signed seed
+            u = self.encoder.encode(token_str)
+            w_hat = self.oproj.get_basis_vector(u)
+            trig, theta, r = self.ca3.reward_handshake(w_hat, target_pid=0, eps=0.35 * math.pi)
+            return trig
+        except Exception:
+            return False
+
     def observe(self, executed: bool, exit_code: int, raw_output: str) -> Tuple[str, float]:
-        """
-        Differentiated Observer:
-        Disentangles security policy blocks, timeouts, and standard process failures.
-        """
         now = time.time()
         if not executed:
             category = "policy_block"
@@ -156,48 +174,31 @@ class FPTAdmissionController:
         self.last_timestamp = now
 
         error = current_penalty - self.target
-
-        # Anti-windup clamped integration
         self.integral_error = max(-1.0, min(1.0, self.integral_error + (error * 0.1)))
 
-        # Derivative smoothing
         if self.cycle_count <= 1:
             d_error = 0.0
         else:
-            d_error = (error - self.last_error) / dt
-            # Clamp d_error to prevent numerical instability on step deltas
-            d_error = max(-2.0, min(2.0, d_error))
+            d_error = max(-2.0, min(2.0, (error - self.last_error) / dt))
         self.last_error = error
 
         control_signal = (self.kp * error) + (self.ki * self.integral_error) + (self.kd * d_error)
-
-        # Sigmoidal response centered around 0.50 nominal
         damping = 1.0 / (1.0 + math.exp(-(control_signal - 0.4) * 2.5))
         self.current_damping = damping
         return error, self.integral_error, d_error, control_signal, damping
 
     def actuate(self, damping: float) -> Dict:
-        """
-        Multi-Surface Actuator:
-        Modulates Rate Limits, Timeouts, Confirmation Locks, and Filesystem Rooting.
-        """
-        # 1. Rate Limiting Spectrum
         active_burst = max(1, int(round(self.base_burst * (1.0 - (0.8 * damping)))))
         active_cooldown = self.base_cooldown * (1.0 + (5.0 * damping))
         self.config.rate_limit.burst_threshold = active_burst
         self.config.rate_limit.tier3_cooldown_seconds = active_cooldown
 
-        # 2. Process Lifecycle Spectrum (Timeouts)
         active_timeout = max(2.0, self.base_timeout * (1.0 - (0.75 * damping)))
         self.config.process.timeout_seconds = active_timeout
 
-        # 3. Autonomy Gate Spectrum (Human Confirmation)
-        # Drop autonomy when systemic instability or policy violations push damping > 0.85
         require_confirm = damping > 0.85
         self.config.require_confirm = require_confirm
 
-        # 4. Filesystem Quarantine Spectrum
-        # Revoke workspace mutation roots under critical damping (>0.92)
         if damping > 0.92:
             active_write_roots = [p for p in self.nominal_write_roots if "scratch" in p]
             if not active_write_roots:
@@ -214,8 +215,34 @@ class FPTAdmissionController:
             "active_write_roots": active_write_roots,
         }
 
-    def step(self, proposal: ActionProposal) -> Tuple[bool, str, int, Dict]:
+    def step(self, proposal: ActionProposal, approval_token: Optional[str] = None) -> Tuple[bool, str, int, Dict]:
         self.cycle_count += 1
+
+        # Check if high damping requires confirmation
+        if self.config.require_confirm:
+            authorized = self.verify_handshake(approval_token)
+            if not authorized:
+                # Challenge issued back to client/human
+                category, observed_penalty = self.observe(False, -1, "Confirmation required: awaiting Human_inthe_loop token")
+                error, i_err, d_err, u_sig, damping = self.compute_damping(observed_penalty)
+                actuation = self.actuate(damping)
+                self.save_state()
+                telemetry = {
+                    "cycle": self.cycle_count,
+                    "event_category": "challenge_pending",
+                    "observed_penalty": round(observed_penalty, 3),
+                    "damping": round(damping, 3),
+                    "actuation": actuation,
+                    "challenge": {
+                        "action_id": proposal.action_id,
+                        "command": proposal.command,
+                        "required_authority": self.human_authority_tag,
+                    }
+                }
+                return False, "E_CHALLENGE_REQUIRED: Provide Human_inthe_loop handshake token", -1, telemetry
+
+            # Single-shot authorization override for this cycle
+            self.config.require_confirm = False
 
         executed, result, exit_code = gated_shell(proposal, config=self.config)
         category, observed_penalty = self.observe(executed, exit_code, result)
@@ -251,8 +278,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             target_path=req.get("target_path", "./workspace"),
             risk_tier=int(req.get("risk_tier", 1)),
         )
+        approval_token = req.get("approval_token")
 
-        executed, result, exit_code, telemetry = controller.step(proposal)
+        executed, result, exit_code, telemetry = controller.step(proposal, approval_token)
 
         response = {
             "status": "ok" if executed and exit_code == 0 else "blocked_or_failed",
@@ -303,7 +331,7 @@ async def main():
         lambda r, w: handle_client(r, w, controller),
         path=SOCKET_PATH,
     )
-    print(f"[FPT Daemon] Online. Multi-surface PID running on {SOCKET_PATH}")
+    print(f"[FPT Daemon] Online. CA3-governed PID running on {SOCKET_PATH}")
 
     loop = asyncio.get_running_loop()
     stop = loop.create_future()
