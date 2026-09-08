@@ -249,6 +249,13 @@ class FPTAdmissionController:
 
             # Single-shot authorization override for this cycle
             self.config.require_confirm = False
+            # Tag proposal with handshake proof for audit continuity
+            if approval_token and approval_token.strip().startswith("{"):
+                try:
+                    tok_data = json.loads(approval_token)
+                    proposal.action_id = f"{proposal.action_id}:sov={tok_data.get("sovereign_id", "anon")}"
+                except Exception:
+                    pass
 
         executed, result, exit_code = gated_shell(proposal, config=self.config)
         category, observed_penalty = self.observe(executed, exit_code, result)
