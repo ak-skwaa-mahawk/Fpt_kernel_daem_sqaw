@@ -137,12 +137,18 @@ class FPTAdmissionController:
     def verify_handshake(self, token_str: Optional[str]) -> bool:
         """
         Validates an out-of-band authorization token against the CA3 dynamical attractor.
+        Accepts raw authority strings or signed JSON payloads from Human_inthe_loop.
         """
         if not token_str:
             return False
         try:
-            # Token format: hex-encoded vector or signed seed
-            u = self.encoder.encode(token_str)
+            # If passed as a JSON handshake token from Human_inthe_loop, extract authority_tag
+            candidate_tag = token_str
+            if token_str.strip().startswith("{"):
+                payload = json.loads(token_str)
+                candidate_tag = payload.get("authority_tag", "")
+
+            u = self.encoder.encode(candidate_tag)
             w_hat = self.oproj.get_basis_vector(u)
             trig, theta, r = self.ca3.reward_handshake(w_hat, target_pid=0, eps=0.35 * math.pi)
             return trig
