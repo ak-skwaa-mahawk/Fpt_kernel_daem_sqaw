@@ -15,7 +15,7 @@ dependencies = [
 requires-python = ">=3.9"
 
 [project.scripts]
-fpt-daemon = "fpt_daemon:main"
+fpt-daemon = "fpt_daemon:run"
 fpt-client = "fpt_client:submit_cli"
 
 [tool.setuptools]
