@@ -1,0 +1,12 @@
+total 41
+drwx------.  6 u0_a407 u0_a407 3452 Sep  8 10:48 .
+-rw-------.  1 u0_a407 u0_a407    0 Sep  8 10:48 .gitignore
+drwx------.  7 u0_a407 u0_a407 3452 Sep  8 10:48 .git
+-rw-------.  1 u0_a407 u0_a407 2973 Sep  8 10:47 README.md
+-rwx------.  1 u0_a407 u0_a407 5820 Sep  8 10:45 fpt_daemon.py
+-rwx------.  1 u0_a407 u0_a407  961 Sep  8 10:45 fpt_client.py
+-rw-------.  1 u0_a407 u0_a407 1334 Sep  8 10:43 audit_log.jsonl
+drwx------.  2 u0_a407 u0_a407 3452 Sep  8 10:42 __pycache__
+drwx------.  2 u0_a407 u0_a407 3452 Sep  8 10:41 repo
+drwx------.  2 u0_a407 u0_a407 3452 Sep  8 10:41 workspace
+drwx------. 11 u0_a407 u0_a407 3452 Sep  8 10:33 ..
