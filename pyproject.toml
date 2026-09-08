@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fpt-kernel-daem-sqaw"
+version = "0.1.0"
+description = "Homeostatic Feedback Processor Theory (FPT) control plane for Admission Gate"
+readme = "README.md"
+authors = [{ name = "ak-skwaa-mahawk" }]
+license = "MIT"
+dependencies = [
+    "admission-gate>=0.4.0"
+]
+requires-python = ">=3.9"
+
+[project.scripts]
+fpt-daemon = "fpt_daemon:main"
+fpt-client = "fpt_client:submit_cli"
+
+[tool.setuptools]
+py-modules = ["fpt_daemon", "fpt_client"]

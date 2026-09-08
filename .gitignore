@@ -6,3 +6,6 @@ audit_log.jsonl
 repo/
 workspace/
 scratch/
+*.egg-info/
+build/
+dist/

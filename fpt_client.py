@@ -1,10 +1,10 @@
-import os
 #!/usr/bin/env python3
 import json
+import os
 import socket
 import sys
-
 import tempfile
+
 SOCKET_PATH = os.path.join(tempfile.gettempdir(), "fpt_kernel.sock")
 
 def submit(cmd: str, target_path: str = "./workspace", tier: int = 1):
@@ -20,10 +20,13 @@ def submit(cmd: str, target_path: str = "./workspace", tier: int = 1):
         res = s.makefile().readline()
     print(json.dumps(json.loads(res), indent=2))
 
-if __name__ == "__main__":
+def submit_cli():
     if len(sys.argv) < 2:
-        print("Usage: fpt_client.py <command> [target_path] [tier]")
+        print("Usage: fpt-client <command> [target_path] [tier]")
         sys.exit(1)
     target = sys.argv[2] if len(sys.argv) > 2 else "./workspace"
     tier = int(sys.argv[3]) if len(sys.argv) > 3 else 1
     submit(sys.argv[1], target, tier)
+
+if __name__ == "__main__":
+    submit_cli()
