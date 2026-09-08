@@ -224,6 +224,14 @@ class FPTAdmissionController:
     def step(self, proposal: ActionProposal, approval_token: Optional[str] = None) -> Tuple[bool, str, int, Dict]:
         self.cycle_count += 1
 
+        # Tag proposal with sovereign proof if provided
+        if approval_token and approval_token.strip().startswith("{"):
+            try:
+                tok_data = json.loads(approval_token)
+                proposal.action_id = f"{proposal.action_id}:sov={tok_data.get("sovereign_id", "anon")}"
+            except Exception:
+                pass
+
         # Check if high damping requires confirmation
         if self.config.require_confirm:
             authorized = self.verify_handshake(approval_token)
@@ -249,13 +257,6 @@ class FPTAdmissionController:
 
             # Single-shot authorization override for this cycle
             self.config.require_confirm = False
-            # Tag proposal with handshake proof for audit continuity
-            if approval_token and approval_token.strip().startswith("{"):
-                try:
-                    tok_data = json.loads(approval_token)
-                    proposal.action_id = f"{proposal.action_id}:sov={tok_data.get("sovereign_id", "anon")}"
-                except Exception:
-                    pass
 
         executed, result, exit_code = gated_shell(proposal, config=self.config)
         category, observed_penalty = self.observe(executed, exit_code, result)
