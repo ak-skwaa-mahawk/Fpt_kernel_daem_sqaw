@@ -9,3 +9,5 @@ scratch/
 *.egg-info/
 build/
 dist/
+.coverage
+config/
