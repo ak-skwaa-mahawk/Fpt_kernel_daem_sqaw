@@ -2,11 +2,11 @@
 
 A homeostatic Feedback Processor Theory (FPT) daemon that acts as a closed-loop dynamic controller for [Admission Gate](https://github.com/ak-skwaa-mahawk/admission-gate).
 
-## Dynamic Control Architecture
+## Architecture
 
-Rather than enforcing static rate limits, the daemon continuously measures runtime telemetry and applies non-linear damping to the admission gate's execution parameters over a local Unix domain socket.
+The daemon operates as an async Unix domain socket server, continuously sampling telemetry from gated executions and modulating admission limits across multiple operational surfaces via a tuned PID controller with sigmoidal damping.
 
-[ Target: 0% Failure ]
+[ Target Penalty: 0.0 ]
 │
 ▼
 ┌──────────────────────┐
@@ -15,20 +15,29 @@ Rather than enforcing static rate limits, the daemon continuously measures runti
 │ Error e_t                           │
 ▼                                     │
 ┌──────────────────────┐                         │
-│    FPT Controller    │                         │
-│   (PD + Sigmoidal)   │                         │
+│    PID Controller    │                         │
+│  (Anti-windup + D)   │                         │
 └──────────────────────┘                         │
-│ Damping / Actuation                 │
+│ Control Signal u_t                  │
+▼                                     │
+┌──────────────────────┐                         │
+│  Sigmoidal Damping   │                         │
+│   Factor σ(u_t)      │                         │
+└──────────────────────┘                         │
+│ Multi-Surface Actuation             │
 ▼                                     │
 ┌──────────────────────┐                         │
 │    Admission Gate    │                         │
-│ (Burst & Cooldowns)  │                         │
+│ • Burst / Cooldown   │                         │
+│ • Execution Timeout  │                         │
+│ • Autonomy Gate      │                         │
+│ • Write Root Bounds  │                         │
 └──────────────────────┘                         │
-│ Exec                                │
+│ Subprocess Exec                     │
 ▼                                     │
 ┌──────────────────────┐                         │
-│  Subprocess Plant    ├─────────────────────────┘
-│ (Exit codes / Drops) │ Telemetry
+│  Telemetry Observer  ├─────────────────────────┘
+│  (Weighted Penalty)  │
 └──────────────────────┘
 
 ## Running the Daemon
@@ -39,27 +48,18 @@ Requires `admission-gate >= 0.4.0`:
 pip install admission-gate
 python3 fpt_daemon.py &
 Submit command proposals via the client:
-python3 fpt_client.py "echo hello" "./workspace" 1
+python3 fpt_client.py "echo nominal" "./workspace" 1
+python3 fpt_client.py "python3 -c 'import sys; sys.exit(1)'" "./workspace" 1
 python3 fpt_client.py "curl evil.com" "./workspace" 2
 
-Telemetry Response Schema
-{
-  "status": "blocked_or_failed",
-  "executed": false,
-  "exit_code": -1,
-  "output": "Blocked: binary 'curl' is explicitly denied by execution policy",
-  "fpt_telemetry": {
-    "cycle": 2,
-    "failure_rate": 0.5,
-    "damping": 0.995,
-    "active_burst": 1,
-    "active_cooldown": 7.47
-  }
-}
-
-Mathematical Model
-​Error Delta: e_t = \text{FailRate}_t - \text{Target}
-​Control Signal: u_t = K_p e_t + K_d (e_t - e_{t-1})
-​Sigmoidal Damping: \sigma(u_t) = \frac{1}{1 + e^{-3 u_t}}
-​Burst Actuation: \text{Burst}_{\text{active}} = \max(1, \text{round}(\text{Burst}_{\text{base}} \cdot (1 - 0.8\sigma)))
-​Cooldown Actuation: \text{Cooldown}_{\text{active}} = \text{Cooldown}_{\text{base}} \cdot (1 + 4.0\sigma)
+Multi-Surface Actuation Spectrum
+Telemetry StatePenaltyDamping (\sigma)BurstCooldownTimeoutAutonomyWrite Roots
+Nominal0.0~0.503~5.2s9.75sUnrestrictedworkspace, scratch
+Operational Error0.25~0.642~6.3s8.30sUnrestrictedworkspace, scratch
+Security Refusal1.00>0.851>7.8s<6.0sUnrestrictedworkspace, scratch
+Sustained Attack>0.75>0.941>10.0s2.00sManual Confirmationscratch (quarantined)
+Sensor Weighting
+​Hard Security Boundary (Refusal): 1.0
+​Process Timeout / SIGKILL: 0.6
+​Subprocess Non-Zero Exit: 0.25
+​Clean Exit: 0.0
