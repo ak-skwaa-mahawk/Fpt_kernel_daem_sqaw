@@ -89,8 +89,8 @@ class FPTAdmissionController:
 
         # Baseline Handshake Authority Anchor
         self.human_authority_tag = "authority:human_in_the_loop"
-        rng = np.random.default_rng(1337)
-        self.authority_pattern = normalize(rng.normal(size=(self.N,)))
+        u_auth = self.encoder.encode(self.human_authority_tag)
+        self.authority_pattern = self.oproj.get_basis_vector(u_auth)
         self.memory.encode(self.authority_pattern, raw_tag=self.human_authority_tag)
         self.ca3.encode_pattern(pid=0, p_vec=self.authority_pattern, strength=1.5)
 
