@@ -2,7 +2,7 @@
 """
 Fpt_kernel_daem_sqaw
 A homeostatic Feedback Processor Theory (FPT) daemon listening over a Unix socket.
-Controls execution limits dynamically via Admission Gate.
+Controls execution limits dynamically via Admission Gate using a multi-surface PID controller.
 """
 
 import asyncio
@@ -12,8 +12,10 @@ import math
 import os
 import signal
 import sys
+import tempfile
+import time
 from dataclasses import dataclass
-from typing import Deque, Tuple
+from typing import Deque, Dict, List, Tuple
 
 from admission_gate import (
     ActionProposal,
@@ -24,76 +26,144 @@ from admission_gate import (
     gated_shell,
 )
 
-import tempfile
 SOCKET_PATH = os.path.join(tempfile.gettempdir(), "fpt_kernel.sock")
 
 @dataclass
 class FPTState:
     cycle: int
-    observed_failure_rate: float
-    error: float
+    observed_penalty: float
+    running_error: float
+    integral_error: float
+    derivative_error: float
+    control_signal: float
     damping_factor: float
     active_burst: int
     active_cooldown: float
+    active_timeout: float
+    require_confirm: bool
+    active_write_roots: List[str]
+
 
 class FPTAdmissionController:
     def __init__(
         self,
         base_config: GateConfig,
-        window_size: int = 8,
-        target_failure_rate: float = 0.0,
-        gain_p: float = 2.5,
-        gain_d: float = 1.0,
+        window_size: int = 10,
+        target_penalty: float = 0.0,
+        gain_p: float = 1.2,
+        gain_i: float = 0.1,
+        gain_d: float = 0.5,
     ):
         self.config = base_config
         self.window_size = window_size
-        self.target = target_failure_rate
+        self.target = target_penalty
+
+        # PID Gains
         self.kp = gain_p
+        self.ki = gain_i
         self.kd = gain_d
 
-        self.history: Deque[int] = collections.deque(maxlen=window_size)
+        # Internal State
+        self.history: Deque[float] = collections.deque(maxlen=window_size)
+        self.integral_error = 0.0
         self.last_error = 0.0
+        self.last_timestamp = time.monotonic()
         self.cycle_count = 0
 
+        # Baseline Parameters
         self.base_burst = base_config.rate_limit.burst_threshold
         self.base_cooldown = base_config.rate_limit.tier3_cooldown_seconds
+        self.base_timeout = base_config.process.timeout_seconds
+        self.nominal_write_roots = list(base_config.write_roots)
 
     def observe(self, executed: bool, exit_code: int) -> float:
-        failed = 1 if (not executed or exit_code != 0) else 0
-        self.history.append(failed)
+        """
+        Differentiated Weighted Sensor:
+        - Security boundary refusal (hard violation): 1.0
+        - Timeout / SIGKILL: 0.6
+        - Non-zero subprocess exit (operational error): 0.25
+        - Clean execution: 0.0
+        """
+        if not executed:
+            penalty = 1.0
+        elif exit_code in (124, -9):
+            penalty = 0.6
+        elif exit_code != 0:
+            penalty = 0.25
+        else:
+            penalty = 0.0
+
+        self.history.append(penalty)
         return sum(self.history) / len(self.history)
 
-    def compute_damping(self, current_failure_rate: float) -> Tuple[float, int, float]:
-        error = current_failure_rate - self.target
+    def compute_damping(self, current_penalty: float) -> Tuple[float, float, float, float, float]:
+        now = time.monotonic()
+        dt = max(1e-3, now - self.last_timestamp)
+        self.last_timestamp = now
+
+        error = current_penalty - self.target
+
+        # Discrete integral with anti-windup clamping
+        self.integral_error = max(-1.0, min(1.0, self.integral_error + error))
         d_error = error - self.last_error
         self.last_error = error
 
-        control_signal = (self.kp * error) + (self.kd * d_error)
-        damping = 1.0 / (1.0 + math.exp(-control_signal * 3.0))
+        control_signal = (self.kp * error) + (self.ki * self.integral_error) + (self.kd * d_error)
 
-        clamped_burst = max(1, int(round(self.base_burst * (1.0 - (0.8 * damping)))))
-        clamped_cooldown = self.base_cooldown * (1.0 + (4.0 * damping))
+        # Sigmoidal non-linear damping: maps control signal to [0.0, 1.0]
+        damping = 1.0 / (1.0 + math.exp(-control_signal * 2.5))
+        return error, self.integral_error, d_error, control_signal, damping
 
-        return damping, clamped_burst, clamped_cooldown
+    def actuate(self, damping: float) -> Tuple[int, float, float, bool, List[str]]:
+        # 1. Rate Limiting Actuation
+        active_burst = max(1, int(round(self.base_burst * (1.0 - (0.8 * damping)))))
+        active_cooldown = self.base_cooldown * (1.0 + (5.0 * damping))
+
+        self.config.rate_limit.burst_threshold = active_burst
+        self.config.rate_limit.tier3_cooldown_seconds = active_cooldown
+
+        # 2. Process Lifecycle Actuation
+        active_timeout = max(2.0, self.base_timeout * (1.0 - (0.7 * damping)))
+        self.config.process.timeout_seconds = active_timeout
+
+        # 3. Autonomy Gate Actuation (Human-in-the-loop fallback)
+        require_confirm = damping > 0.88
+        self.config.require_confirm = require_confirm
+
+        # 4. Filesystem Boundary Containment Actuation
+        if damping > 0.94:
+            # Under critical stress, revoke main workspace mutation rights, isolate to scratch
+            active_write_roots = [p for p in self.nominal_write_roots if "scratch" in p]
+            if not active_write_roots:
+                active_write_roots = ["./scratch"]
+        else:
+            active_write_roots = list(self.nominal_write_roots)
+
+        self.config.write_roots = active_write_roots
+
+        return active_burst, active_cooldown, active_timeout, require_confirm, active_write_roots
 
     def step(self, proposal: ActionProposal) -> Tuple[bool, str, int, FPTState]:
         self.cycle_count += 1
 
         executed, result, exit_code = gated_shell(proposal, config=self.config)
-        failure_rate = self.observe(executed, exit_code)
-        damping, new_burst, new_cooldown = self.compute_damping(failure_rate)
-
-        # Actuation: update running GateConfig
-        self.config.rate_limit.burst_threshold = new_burst
-        self.config.rate_limit.tier3_cooldown_seconds = new_cooldown
+        observed_penalty = self.observe(executed, exit_code)
+        error, i_err, d_err, u_sig, damping = self.compute_damping(observed_penalty)
+        burst, cooldown, timeout, confirm, write_roots = self.actuate(damping)
 
         state = FPTState(
             cycle=self.cycle_count,
-            observed_failure_rate=failure_rate,
-            error=failure_rate - self.target,
+            observed_penalty=observed_penalty,
+            running_error=error,
+            integral_error=i_err,
+            derivative_error=d_err,
+            control_signal=u_sig,
             damping_factor=damping,
-            active_burst=new_burst,
-            active_cooldown=round(new_cooldown, 2),
+            active_burst=burst,
+            active_cooldown=round(cooldown, 2),
+            active_timeout=round(timeout, 2),
+            require_confirm=confirm,
+            active_write_roots=write_roots,
         )
 
         return executed, result, exit_code, state
@@ -124,10 +194,16 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             "output": result.strip(),
             "fpt_telemetry": {
                 "cycle": fpt.cycle,
-                "failure_rate": round(fpt.observed_failure_rate, 3),
+                "observed_penalty": round(fpt.observed_penalty, 3),
+                "control_signal": round(fpt.control_signal, 3),
                 "damping": round(fpt.damping_factor, 3),
-                "active_burst": fpt.active_burst,
-                "active_cooldown": fpt.active_cooldown,
+                "actuation": {
+                    "active_burst": fpt.active_burst,
+                    "active_cooldown_sec": fpt.active_cooldown,
+                    "active_timeout_sec": fpt.active_timeout,
+                    "require_confirm": fpt.require_confirm,
+                    "write_roots": fpt.active_write_roots,
+                },
             },
         }
     except Exception as e:
@@ -141,18 +217,22 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
 async def main():
     if os.path.exists(SOCKET_PATH):
-        os.remove(SOCKET_PATH)
+        try:
+            os.remove(SOCKET_PATH)
+        except OSError:
+            pass
 
     os.makedirs("./repo", exist_ok=True)
     os.makedirs("./workspace", exist_ok=True)
+    os.makedirs("./scratch", exist_ok=True)
 
     config = GateConfig(
         read_roots=["./repo"],
-        write_roots=["./workspace"],
+        write_roots=["./workspace", "./scratch"],
         require_confirm=False,
         exec_policy=ExecConfig(
-            allow=["echo", "ls", "python", "python3", "git", "cat", "touch"],
-            deny=["curl", "wget", "ssh", "nc", "bash", "sh"],
+            allow=["echo", "ls", "python", "python3", "git", "cat", "touch", "pytest"],
+            deny=["curl", "wget", "ssh", "nc", "bash", "sh", "sudo"],
         ),
         rate_limit=RateLimitConfig(
             enabled=True,
@@ -160,7 +240,7 @@ async def main():
             burst_threshold=5,
             tier3_cooldown_seconds=1.5,
         ),
-        process=ProcessConfig(timeout_seconds=10.0, scrub_env=True),
+        process=ProcessConfig(timeout_seconds=15.0, scrub_env=True),
     )
 
     controller = FPTAdmissionController(config)
@@ -168,7 +248,7 @@ async def main():
         lambda r, w: handle_client(r, w, controller),
         path=SOCKET_PATH,
     )
-    print(f"[FPT Daemon] Online. Listening on {SOCKET_PATH}")
+    print(f"[FPT Daemon] Online. Multi-surface PID active on {SOCKET_PATH}")
 
     loop = asyncio.get_running_loop()
     stop = loop.create_future()
@@ -180,7 +260,11 @@ async def main():
     server.close()
     await server.wait_closed()
     if os.path.exists(SOCKET_PATH):
-        os.remove(SOCKET_PATH)
+        try:
+            os.remove(SOCKET_PATH)
+        except OSError:
+            pass
+
 
 if __name__ == "__main__":
     asyncio.run(main())
