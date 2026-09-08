@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fpt-kernel-daem-sqaw"
+name = "kpt_kernel"
 version = "0.1.0"
 description = "Homeostatic Feedback Processor Theory (FPT) control plane for Admission Gate"
 readme = "README.md"
