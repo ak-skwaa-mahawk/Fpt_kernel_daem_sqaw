@@ -1,13 +1,13 @@
 {
-  "seq": 83,
-  "root_tx": "0x1cacc56ea48f043ffb1419ec9c24b375daf0713ad37d0da562e02e66df2aa5a0",
+  "seq": 85,
+  "root_tx": "0xe08bf61d59c1d7748f790107bd2756696861d5004fceb603cbdb34b9322b6a7e",
   "verifier": "0xb09d703e8dc8f4e8bb0ec5d6fb40d96c23febf6e",
   "metrics": {
     "phase_slip_rad": {
-      "x": 1.283506,
-      "y": 0.146228
+      "x": 1.283032,
+      "y": 0.14576
     },
-    "coherence_metric": 0.280331,
+    "coherence_metric": 0.2808,
     "living_state": "LOCKED"
   },
   "status": "ATTESTED"
