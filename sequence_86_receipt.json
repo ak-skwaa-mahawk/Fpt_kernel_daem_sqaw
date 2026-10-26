@@ -1,0 +1,14 @@
+{
+  "seq": 86,
+  "root_tx": "0x6511d24b2e5f6c767fdc2429622e94426ebd32291bf2a020853029d683901a5d",
+  "verifier": "0xb09d703e8dc8f4e8bb0ec5d6fb40d96c23febf6e",
+  "metrics": {
+    "phase_slip_rad": {
+      "x": 1.292748,
+      "y": 0.155354
+    },
+    "coherence_metric": 0.271174,
+    "living_state": "LOCKED"
+  },
+  "status": "ATTESTED"
+}
